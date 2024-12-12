@@ -750,11 +750,32 @@ func (d *Distributor) validateSamples(now model.Time, ts *mimirpb.PreallocTimese
 		return validateSample(d.sampleValidationMetrics, now, d.limits, userID, group, ts.Labels, ts.Samples[0])
 	}
 
-	for _, s := range ts.Samples {
+	timestamps := make(map[int64]struct{}, min(len(ts.Samples), 100))
+	currPos := 0
+	duplicatesFound := false
+	for idx, s := range ts.Samples {
+		if _, ok := timestamps[s.TimestampMs]; ok {
+			// A sample with the same timestamp has already been validated, so we skip it.
+			duplicatesFound = true
+			continue
+		}
+
+		timestamps[s.TimestampMs] = struct{}{}
 		if err := validateSample(d.sampleValidationMetrics, now, d.limits, userID, group, ts.Labels, s); err != nil {
 			return err
 		}
+
+		if currPos != idx {
+			ts.Samples[currPos] = s
+		}
+		currPos++
 	}
+
+	if duplicatesFound {
+		ts.Samples = ts.Samples[:currPos]
+		ts.SamplesUpdated()
+	}
+
 	return nil
 }
 
