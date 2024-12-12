@@ -750,6 +750,25 @@ func (d *Distributor) validateSamples(now model.Time, ts *mimirpb.PreallocTimese
 	return nil
 }
 
+// validateHistograms validates histograms of a single timeseries and removes the ones with duplicated timestamps.
+// Returns an error explaining the first validation finding.
+// May alter timeseries data in-place.
+// The returned error may retain the series labels.
+func (d *Distributor) validateHistograms(now model.Time, ts *mimirpb.PreallocTimeseries, userID, group string) error {
+	histogramsUpdated := false
+	for i := range ts.Histograms {
+		updated, err := validateSampleHistogram(d.sampleValidationMetrics, now, d.limits, userID, group, ts.Labels, &ts.Histograms[i])
+		if err != nil {
+			return err
+		}
+		histogramsUpdated = histogramsUpdated || updated
+	}
+	if histogramsUpdated {
+		ts.HistogramsUpdated()
+	}
+	return nil
+}
+
 // Validates a single series from a write request.
 // May alter timeseries data in-place.
 // The returned error may retain the series labels.
@@ -765,16 +784,8 @@ func (d *Distributor) validateSeries(nowt time.Time, ts *mimirpb.PreallocTimeser
 		return err
 	}
 
-	histogramsUpdated := false
-	for i := range ts.Histograms {
-		updated, err := validateSampleHistogram(d.sampleValidationMetrics, now, d.limits, userID, group, ts.Labels, &ts.Histograms[i])
-		if err != nil {
-			return err
-		}
-		histogramsUpdated = histogramsUpdated || updated
-	}
-	if histogramsUpdated {
-		ts.HistogramsUpdated()
+	if err := d.validateHistograms(now, ts, userID, group); err != nil {
+		return err
 	}
 
 	if d.limits.MaxGlobalExemplarsPerUser(userID) == 0 {
