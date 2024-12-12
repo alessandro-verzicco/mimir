@@ -742,6 +742,14 @@ func (d *Distributor) checkSample(ctx context.Context, userID, cluster, replica 
 // May alter timeseries data in-place.
 // The returned error may retain the series labels.
 func (d *Distributor) validateSamples(now model.Time, ts *mimirpb.PreallocTimeseries, userID, group string) error {
+	if len(ts.Samples) == 0 {
+		return nil
+	}
+
+	if len(ts.Samples) == 1 {
+		return validateSample(d.sampleValidationMetrics, now, d.limits, userID, group, ts.Labels, ts.Samples[0])
+	}
+
 	for _, s := range ts.Samples {
 		if err := validateSample(d.sampleValidationMetrics, now, d.limits, userID, group, ts.Labels, s); err != nil {
 			return err
@@ -755,6 +763,21 @@ func (d *Distributor) validateSamples(now model.Time, ts *mimirpb.PreallocTimese
 // May alter timeseries data in-place.
 // The returned error may retain the series labels.
 func (d *Distributor) validateHistograms(now model.Time, ts *mimirpb.PreallocTimeseries, userID, group string) error {
+	if len(ts.Histograms) == 0 {
+		return nil
+	}
+
+	if len(ts.Histograms) == 1 {
+		updated, err := validateSampleHistogram(d.sampleValidationMetrics, now, d.limits, userID, group, ts.Labels, &ts.Histograms[0])
+		if err != nil {
+			return err
+		}
+		if updated {
+			ts.HistogramsUpdated()
+		}
+		return nil
+	}
+
 	histogramsUpdated := false
 	for i := range ts.Histograms {
 		updated, err := validateSampleHistogram(d.sampleValidationMetrics, now, d.limits, userID, group, ts.Labels, &ts.Histograms[i])
