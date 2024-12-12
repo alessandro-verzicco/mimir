@@ -1467,6 +1467,102 @@ func TestDistributor_Push_HistogramValidation(t *testing.T) {
 	}
 }
 
+func TestDistributor_SampleDuplicateTimestamp(t *testing.T) {
+	labels := []string{labels.MetricName, "series", "job", "job", "service", "service"}
+
+	testCases := map[string]struct {
+		req             *mimirpb.WriteRequest
+		expectedSamples []mimirpb.PreallocTimeseries
+		expectedErrors  []error
+		expectedMetrics string
+	}{
+		"do not deduplicate if there are no duplicated timestamps": {
+			req: makeWriteRequestWith(
+				makeTimeseries(labels, makeSamples(10, 1), nil, nil),
+				makeTimeseries(labels, makeSamples(20, 2), nil, nil),
+			),
+			expectedSamples: []mimirpb.PreallocTimeseries{
+				makeTimeseries(labels, makeSamples(10, 1), nil, nil),
+				makeTimeseries(labels, makeSamples(20, 2), nil, nil),
+			},
+		},
+		"deduplicate duplicated timestamps within a single timeseries, and return the first error encountered": {
+			req: makeWriteRequestWith(
+				makeTimeseries(labels, append(makeSamples(10, 1), append(makeSamples(20, 2), append(makeSamples(10, 3), makeSamples(20, 4)...)...)...), nil, nil),
+				makeTimeseries(labels, nil, append(makeHistograms(30, generateTestHistogram(0)), append(makeHistograms(40, generateTestHistogram(1)), append(makeHistograms(40, generateTestHistogram(2)), makeHistograms(30, generateTestHistogram(3))...)...)...), nil),
+			),
+			expectedSamples: []mimirpb.PreallocTimeseries{
+				makeTimeseries(labels, append(makeSamples(10, 1), makeSamples(20, 2)...), nil, nil),
+				makeTimeseries(labels, nil, append(makeHistograms(30, generateTestHistogram(0)), makeHistograms(40, generateTestHistogram(1))...), nil),
+			},
+			expectedErrors: []error{
+				fmt.Errorf("samples with duplicated timestamps have been discarded, discarded samples: %d series: '%.200s' (err-mimir-sample-duplicate-timestamp)", 2, "series"),
+				fmt.Errorf("samples with duplicated timestamps have been discarded, discarded samples: %d series: '%.200s' (err-mimir-sample-duplicate-timestamp)", 2, "series"),
+			},
+			expectedMetrics: `
+				# HELP cortex_discarded_samples_total The total number of samples that were discarded.
+				# TYPE cortex_discarded_samples_total counter
+				cortex_discarded_samples_total{group="test-group",reason="sample_duplicate_timestamp",user="user"} 4
+			`,
+		},
+		"do not deduplicate duplicated timestamps in different timeseries": {
+			req: makeWriteRequestWith(
+				makeTimeseries(labels, append(makeSamples(10, 1), makeSamples(10, 2)...), makeHistograms(30, generateTestHistogram(0)), nil),
+				makeTimeseries(labels, makeSamples(10, 3), append(makeHistograms(20, generateTestHistogram(1)), makeHistograms(20, generateTestHistogram(2))...), nil),
+				makeTimeseries(labels, makeSamples(10, 4), append(makeHistograms(20, generateTestHistogram(3)), makeHistograms(30, generateTestHistogram(4))...), nil),
+			),
+			expectedSamples: []mimirpb.PreallocTimeseries{
+				makeTimeseries(labels, makeSamples(10, 1), makeHistograms(30, generateTestHistogram(0)), nil),
+				makeTimeseries(labels, makeSamples(10, 3), makeHistograms(20, generateTestHistogram(1)), nil),
+				makeTimeseries(labels, makeSamples(10, 4), append(makeHistograms(20, generateTestHistogram(3)), makeHistograms(30, generateTestHistogram(4))...), nil),
+			},
+			expectedErrors: []error{
+				fmt.Errorf("samples with duplicated timestamps have been discarded, discarded samples: %d series: '%.200s' (err-mimir-sample-duplicate-timestamp)", 1, "series"),
+				fmt.Errorf("samples with duplicated timestamps have been discarded, discarded samples: %d series: '%.200s' (err-mimir-sample-duplicate-timestamp)", 1, "series"),
+				nil,
+			},
+			expectedMetrics: `
+				# HELP cortex_discarded_samples_total The total number of samples that were discarded.
+				# TYPE cortex_discarded_samples_total counter
+				cortex_discarded_samples_total{group="test-group",reason="sample_duplicate_timestamp",user="user"} 2
+			`,
+		},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			limits := prepareDefaultLimits()
+			ds, _, regs, _ := prepare(t, prepConfig{
+				limits:          limits,
+				numDistributors: 1,
+			})
+
+			// Pre-condition check.
+			require.Len(t, ds, 1)
+			require.Len(t, regs, 1)
+
+			now := mtime.Now()
+			for i, ts := range tc.req.Timeseries {
+				shouldRemove, err := ds[0].validateSeries(now, &ts, "user", "test-group", true, true, 0, 0)
+				require.False(t, shouldRemove)
+				if len(tc.expectedErrors) == 0 {
+					require.NoError(t, err)
+				} else {
+					if tc.expectedErrors[i] == nil {
+						require.NoError(t, err)
+					} else {
+						require.Error(t, err)
+						require.Equal(t, tc.expectedErrors[i], err)
+					}
+				}
+			}
+
+			assert.Equal(t, tc.expectedSamples, tc.req.Timeseries)
+			assert.NoError(t, testutil.GatherAndCompare(regs[0], strings.NewReader(tc.expectedMetrics), "cortex_discarded_samples_total"))
+		})
+	}
+}
+
 func TestDistributor_ExemplarValidation(t *testing.T) {
 	tests := map[string]struct {
 		prepareConfig     func(limits *validation.Limits)
