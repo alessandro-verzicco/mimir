@@ -1563,6 +1563,194 @@ func TestDistributor_SampleDuplicateTimestamp(t *testing.T) {
 	}
 }
 
+func BenchmarkDistributor_SampleDuplicateTimestamp(b *testing.B) {
+	const (
+		metricName              = "series"
+		testSize                = 80_000
+		numberOfDifferentValues = 40_000
+	)
+	labels := []string{labels.MetricName, metricName, "job", "job", "service", "service"}
+
+	now := mtime.Now()
+	timestamp := now.UnixMilli()
+
+	testCases := map[string]struct {
+		setup          func(int) [][]mimirpb.PreallocTimeseries
+		expectedErrors bool
+	}{
+		"one timeseries with one sample": {
+			setup: func(n int) [][]mimirpb.PreallocTimeseries {
+				ts := []mimirpb.PreallocTimeseries{
+					makeTimeseries(labels, makeSamples(timestamp, 1), nil, nil),
+				}
+				timeseries := make([][]mimirpb.PreallocTimeseries, n)
+				for i := 0; i < n; i++ {
+					timeseries[i] = ts
+				}
+				return timeseries
+			},
+			expectedErrors: false,
+		},
+		"one timeseries with one histogram": {
+			setup: func(n int) [][]mimirpb.PreallocTimeseries {
+				ts := []mimirpb.PreallocTimeseries{
+					makeTimeseries(labels, nil, makeHistograms(timestamp, generateTestHistogram(1)), nil),
+				}
+				timeseries := make([][]mimirpb.PreallocTimeseries, n)
+				for i := 0; i < n; i++ {
+					timeseries[i] = ts
+				}
+				return timeseries
+			},
+			expectedErrors: false,
+		},
+		"one timeseries with one sample and one histogram": {
+			setup: func(n int) [][]mimirpb.PreallocTimeseries {
+				ts := []mimirpb.PreallocTimeseries{
+					makeTimeseries(labels, makeSamples(timestamp-1, 1), makeHistograms(timestamp, generateTestHistogram(2)), nil),
+				}
+				timeseries := make([][]mimirpb.PreallocTimeseries, n)
+				for i := 0; i < n; i++ {
+					timeseries[i] = ts
+				}
+				return timeseries
+			},
+			expectedErrors: false,
+		},
+		"one timeseries with two samples": {
+			setup: func(n int) [][]mimirpb.PreallocTimeseries {
+				ts := []mimirpb.PreallocTimeseries{
+					makeTimeseries(labels, append(makeSamples(timestamp-1, 1), makeSamples(timestamp, 2)...), nil, nil),
+				}
+				timeseries := make([][]mimirpb.PreallocTimeseries, n)
+				for i := 0; i < n; i++ {
+					timeseries[i] = ts
+				}
+				return timeseries
+			},
+			expectedErrors: false,
+		},
+		"one timeseries with two histograms": {
+			setup: func(n int) [][]mimirpb.PreallocTimeseries {
+				ts := []mimirpb.PreallocTimeseries{
+					makeTimeseries(labels, nil, append(makeHistograms(timestamp-1, generateTestHistogram(1)), makeHistograms(timestamp, generateTestHistogram(2))...), nil),
+				}
+				timeseries := make([][]mimirpb.PreallocTimeseries, n)
+				for i := 0; i < n; i++ {
+					timeseries[i] = ts
+				}
+				return timeseries
+			},
+			expectedErrors: false,
+		},
+		"one timeseries with two samples and two histograms": {
+			setup: func(n int) [][]mimirpb.PreallocTimeseries {
+				ts := []mimirpb.PreallocTimeseries{
+					makeTimeseries(labels, append(makeSamples(timestamp-1, 1), makeSamples(timestamp, 2)...), append(makeHistograms(timestamp-1, generateTestHistogram(3)), makeHistograms(timestamp, generateTestHistogram(4))...), nil),
+				}
+				timeseries := make([][]mimirpb.PreallocTimeseries, n)
+				for i := 0; i < n; i++ {
+					timeseries[i] = ts
+				}
+				return timeseries
+			},
+			expectedErrors: false,
+		},
+		"one timeseries with 80_000 samples with duplicated timestamps": {
+			setup: func(n int) [][]mimirpb.PreallocTimeseries {
+				timeseries := make([][]mimirpb.PreallocTimeseries, n)
+				for i := 0; i < n; i++ {
+					samples := make([]mimirpb.Sample, testSize)
+					value := 0
+					for i := 0; i < testSize; i++ {
+						if i < numberOfDifferentValues {
+							value++
+						}
+						samples[i].TimestampMs = timestamp
+						samples[i].Value = float64(value)
+					}
+					timeseries[i] = []mimirpb.PreallocTimeseries{
+						makeTimeseries(labels, samples, nil, nil),
+					}
+				}
+				return timeseries
+			},
+			expectedErrors: true,
+		},
+		"one timeseries with 80_000 histograms with duplicated timestamps": {
+			setup: func(n int) [][]mimirpb.PreallocTimeseries {
+				timeseries := make([][]mimirpb.PreallocTimeseries, n)
+				for i := 0; i < n; i++ {
+					histograms := make([]mimirpb.Histogram, testSize)
+					value := 0
+					for i := 0; i < testSize; i++ {
+						if i < numberOfDifferentValues {
+							value++
+						}
+						histograms[i] = makeHistograms(timestamp, generateTestHistogram(value))[0]
+					}
+					timeseries[i] = []mimirpb.PreallocTimeseries{
+						makeTimeseries(labels, nil, histograms, nil),
+					}
+				}
+				return timeseries
+			},
+			expectedErrors: true,
+		},
+		"one timeseries with 80_000 samples and 80_000 histograms with duplicated timestamps": {
+			setup: func(n int) [][]mimirpb.PreallocTimeseries {
+				timeseries := make([][]mimirpb.PreallocTimeseries, n)
+				for i := 0; i < n; i++ {
+					samples := make([]mimirpb.Sample, testSize)
+					histograms := make([]mimirpb.Histogram, testSize)
+					value := 0
+					for i := 0; i < testSize; i++ {
+						if i < numberOfDifferentValues {
+							value++
+						}
+						samples[i].TimestampMs = timestamp
+						samples[i].Value = float64(value)
+						histograms[i] = makeHistograms(timestamp, generateTestHistogram(value))[0]
+					}
+					timeseries[i] = []mimirpb.PreallocTimeseries{
+						makeTimeseries(labels, samples, histograms, nil),
+					}
+				}
+				return timeseries
+			},
+			expectedErrors: true,
+		},
+	}
+
+	limits := prepareDefaultLimits()
+	ds, _, regs, _ := prepare(b, prepConfig{
+		limits:          limits,
+		numDistributors: 1,
+	})
+
+	// Pre-condition check.
+	require.Len(b, ds, 1)
+	require.Len(b, regs, 1)
+
+	for name, tc := range testCases {
+		b.Run(name, func(b *testing.B) {
+			timeseries := tc.setup(b.N)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for n := 0; n < b.N; n++ {
+				for _, ts := range timeseries[n] {
+					_, err := ds[0].validateSeries(now, &ts, "user", "test-group", true, true, 0, 0)
+					if !tc.expectedErrors && err != nil {
+						b.Fatal(err)
+					} else if tc.expectedErrors && err == nil {
+						b.Fatal("an error was expected")
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestDistributor_ExemplarValidation(t *testing.T) {
 	tests := map[string]struct {
 		prepareConfig     func(limits *validation.Limits)
