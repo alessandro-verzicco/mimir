@@ -799,17 +799,39 @@ func (d *Distributor) validateHistograms(now model.Time, ts *mimirpb.PreallocTim
 		return nil
 	}
 
+	timestamps := make(map[int64]struct{}, min(len(ts.Histograms), 100))
+	currPos := 0
+	duplicatesFound := false
 	histogramsUpdated := false
-	for i := range ts.Histograms {
-		updated, err := validateSampleHistogram(d.sampleValidationMetrics, now, d.limits, userID, group, ts.Labels, &ts.Histograms[i])
+	for idx := range ts.Histograms {
+		if _, ok := timestamps[ts.Histograms[idx].Timestamp]; ok {
+			// A sample with the same timestamp has already been validated, so we skip it.
+			duplicatesFound = true
+			continue
+		}
+
+		timestamps[ts.Histograms[idx].Timestamp] = struct{}{}
+		updated, err := validateSampleHistogram(d.sampleValidationMetrics, now, d.limits, userID, group, ts.Labels, &ts.Histograms[idx])
 		if err != nil {
 			return err
 		}
 		histogramsUpdated = histogramsUpdated || updated
+
+		if currPos != idx {
+			ts.Histograms[currPos] = ts.Histograms[idx]
+		}
+		currPos++
 	}
+
 	if histogramsUpdated {
 		ts.HistogramsUpdated()
 	}
+
+	if duplicatesFound {
+		ts.Histograms = ts.Histograms[:currPos]
+		ts.HistogramsUpdated()
+	}
+
 	return nil
 }
 
