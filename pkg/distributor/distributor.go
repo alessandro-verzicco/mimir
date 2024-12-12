@@ -792,30 +792,13 @@ func (d *Distributor) validateHistograms(now model.Time, ts *mimirpb.PreallocTim
 	return nil
 }
 
-// Validates a single series from a write request.
+// validateExemplars validates exemplars of a single timeseries.
 // May alter timeseries data in-place.
-// The returned error may retain the series labels.
-// It uses the passed nowt time to observe the delay of sample timestamps.
-func (d *Distributor) validateSeries(nowt time.Time, ts *mimirpb.PreallocTimeseries, userID, group string, skipLabelValidation, skipLabelCountValidation bool, minExemplarTS, maxExemplarTS int64) error {
-	if err := validateLabels(d.sampleValidationMetrics, d.limits, userID, group, ts.Labels, skipLabelValidation, skipLabelCountValidation); err != nil {
-		return err
-	}
-
-	now := model.TimeFromUnixNano(nowt.UnixNano())
-
-	if err := d.validateSamples(now, ts, userID, group); err != nil {
-		return err
-	}
-
-	if err := d.validateHistograms(now, ts, userID, group); err != nil {
-		return err
-	}
-
+func (d *Distributor) validateExemplars(ts *mimirpb.PreallocTimeseries, userID string, minExemplarTS, maxExemplarTS int64) {
 	if d.limits.MaxGlobalExemplarsPerUser(userID) == 0 {
 		ts.ClearExemplars()
-		return nil
+		return
 	}
-
 	allowedExemplars := d.limits.MaxExemplarsPerSeriesPerRequest(userID)
 	if allowedExemplars > 0 && len(ts.Exemplars) > allowedExemplars {
 		d.exemplarValidationMetrics.tooManyExemplars.WithLabelValues(userID).Add(float64(len(ts.Exemplars) - allowedExemplars))
@@ -847,6 +830,29 @@ func (d *Distributor) validateSeries(nowt time.Time, ts *mimirpb.PreallocTimeser
 	if !isInOrder {
 		ts.SortExemplars()
 	}
+}
+
+// Validates a single series from a write request.
+// May alter timeseries data in-place.
+// The returned error may retain the series labels.
+// It uses the passed nowt time to observe the delay of sample timestamps.
+func (d *Distributor) validateSeries(nowt time.Time, ts *mimirpb.PreallocTimeseries, userID, group string, skipLabelValidation, skipLabelCountValidation bool, minExemplarTS, maxExemplarTS int64) error {
+	if err := validateLabels(d.sampleValidationMetrics, d.limits, userID, group, ts.Labels, skipLabelValidation, skipLabelCountValidation); err != nil {
+		return err
+	}
+
+	now := model.TimeFromUnixNano(nowt.UnixNano())
+
+	if err := d.validateSamples(now, ts, userID, group); err != nil {
+		return err
+	}
+
+	if err := d.validateHistograms(now, ts, userID, group); err != nil {
+		return err
+	}
+
+	d.validateExemplars(ts, userID, minExemplarTS, maxExemplarTS)
+
 	return nil
 }
 func (d *Distributor) labelValuesWithNewlines(labels []mimirpb.LabelAdapter) int {
