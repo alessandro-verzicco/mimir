@@ -737,6 +737,19 @@ func (d *Distributor) checkSample(ctx context.Context, userID, cluster, replica 
 	return true, nil
 }
 
+// validateSamples validates samples of a single timeseries and removes the ones with duplicated timestamps.
+// Returns an error explaining the first validation finding.
+// May alter timeseries data in-place.
+// The returned error may retain the series labels.
+func (d *Distributor) validateSamples(now model.Time, ts *mimirpb.PreallocTimeseries, userID, group string) error {
+	for _, s := range ts.Samples {
+		if err := validateSample(d.sampleValidationMetrics, now, d.limits, userID, group, ts.Labels, s); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Validates a single series from a write request.
 // May alter timeseries data in-place.
 // The returned error may retain the series labels.
@@ -748,10 +761,8 @@ func (d *Distributor) validateSeries(nowt time.Time, ts *mimirpb.PreallocTimeser
 
 	now := model.TimeFromUnixNano(nowt.UnixNano())
 
-	for _, s := range ts.Samples {
-		if err := validateSample(d.sampleValidationMetrics, now, d.limits, userID, group, ts.Labels, s); err != nil {
-			return err
-		}
+	if err := d.validateSamples(now, ts, userID, group); err != nil {
+		return err
 	}
 
 	histogramsUpdated := false
