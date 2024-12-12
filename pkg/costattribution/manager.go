@@ -62,9 +62,6 @@ func (m *Manager) running(ctx context.Context) error {
 	t := time.NewTicker(m.cleanupInterval)
 	defer t.Stop()
 
-	tMupdate := time.NewTicker(m.metricsExportInterval)
-	defer tMupdate.Stop()
-
 	for {
 		select {
 		case <-t.C:
@@ -72,8 +69,6 @@ func (m *Manager) running(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-		case <-tMupdate.C:
-			m.updateMetrics()
 		case <-ctx.Done():
 			return nil
 		}
@@ -219,16 +214,4 @@ func (m *Manager) getInactiveObservationsForUser(userID string, deadline int64) 
 	}
 
 	return cat.GetInactiveObservations(deadline)
-}
-
-func (m *Manager) updateMetrics() {
-	if m == nil {
-		return
-	}
-
-	m.mtx.RLock()
-	defer m.mtx.RUnlock()
-	for _, tracker := range m.trackersByUserID {
-		tracker.updateMetrics()
-	}
 }

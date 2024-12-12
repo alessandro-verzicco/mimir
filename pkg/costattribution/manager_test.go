@@ -94,9 +94,6 @@ func Test_CreateDeleteTracker(t *testing.T) {
 		# TYPE cortex_received_attributed_samples_total counter
 		cortex_received_attributed_samples_total{department="foo",service="dodo",tenant="user3",tracker="cost-attribution"} 1
 		`
-
-		// manually trigger metrics update to ensure they are exported
-		manager.updateMetrics()
 		assert.NoError(t, testutil.GatherAndCompare(manager.reg, strings.NewReader(expectedMetrics), "cortex_discarded_attributed_samples_total", "cortex_received_attributed_samples_total"))
 	})
 
@@ -152,7 +149,6 @@ func Test_CreateDeleteTracker(t *testing.T) {
 		# TYPE cortex_received_attributed_samples_total counter
 		cortex_received_attributed_samples_total{feature="__overflow__",team="__overflow__",tenant="user3",tracker="cost-attribution"} 1
 		`
-		manager.updateMetrics()
 		assert.NoError(t, testutil.GatherAndCompare(manager.reg, strings.NewReader(expectedMetrics), "cortex_received_attributed_samples_total"))
 	})
 }

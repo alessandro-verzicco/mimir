@@ -17,10 +17,10 @@ import (
 
 type Observation struct {
 	lastUpdate      *atomic.Int64
-	activeSerie     *atomic.Int64
-	receivedSample  *atomic.Int64
+	activeSerie     *atomic.Float64
+	receivedSample  *atomic.Float64
 	discardSamplemu sync.RWMutex
-	discardedSample map[string]*atomic.Int64
+	discardedSample map[string]*atomic.Float64
 }
 
 const (
@@ -180,24 +180,45 @@ func (t *Tracker) IncrementDiscardedSamples(lbs labels.Labels, value float64, re
 	if t == nil {
 		return
 	}
-	t.updateCounters(lbs, now.Unix(), 0, 0, int64(value), &reason)
+	t.updateCounters(lbs, now.Unix(), 0, 0, value, &reason)
 }
 
 func (t *Tracker) IncrementReceivedSamples(lbs labels.Labels, value float64, now time.Time) {
 	if t == nil {
 		return
 	}
-	t.updateCounters(lbs, now.Unix(), 0, int64(value), 0, nil)
+	t.updateCounters(lbs, now.Unix(), 0, value, 0, nil)
 }
 
 func (t *Tracker) Collect(out chan<- prometheus.Metric) {
 	if t == nil {
 		return
 	}
-
-	t.activeSeriesPerUserAttribution.Collect(out)
-	t.receivedSamplesAttribution.Collect(out)
-	t.discardedSampleAttribution.Collect(out)
+	if t.isOverflow {
+		out <- prometheus.MustNewConstMetric(t.activeSeriesPerUserAttribution.WithLabelValues(t.overflowLabels[:len(t.overflowLabels)-1]...).Desc(), prometheus.GaugeValue, 1, t.overflowLabels[:len(t.overflowLabels)-1]...)
+		out <- prometheus.MustNewConstMetric(t.receivedSamplesAttribution.WithLabelValues(t.overflowLabels[:len(t.overflowLabels)-1]...).Desc(), prometheus.CounterValue, 1, t.overflowLabels[:len(t.overflowLabels)-1]...)
+		out <- prometheus.MustNewConstMetric(t.discardedSampleAttribution.WithLabelValues(t.overflowLabels...).Desc(), prometheus.CounterValue, 1, t.overflowLabels...)
+		return
+	}
+	for key, o := range t.observed {
+		if o != nil {
+			keys := strings.Split(key, string(sep))
+			keys = append(keys, t.userID)
+			if o.activeSerie.Load() > 0 {
+				out <- prometheus.MustNewConstMetric(t.activeSeriesPerUserAttribution.WithLabelValues(keys...).Desc(), prometheus.GaugeValue, o.activeSerie.Load(), keys...)
+			}
+			if o.receivedSample.Load() > 0 {
+				out <- prometheus.MustNewConstMetric(t.receivedSamplesAttribution.WithLabelValues(keys...).Desc(), prometheus.CounterValue, o.receivedSample.Load(), keys...)
+			}
+			o.discardSamplemu.RLock()
+			for reason, cnt := range o.discardedSample {
+				if cnt.Load() > 0 {
+					out <- prometheus.MustNewConstMetric(t.discardedSampleAttribution.WithLabelValues(append(keys, reason)...).Desc(), prometheus.CounterValue, cnt.Load(), append(keys, reason)...)
+				}
+			}
+			o.discardSamplemu.RUnlock()
+		}
+	}
 }
 
 // Describe implements prometheus.Collector.
@@ -208,7 +229,7 @@ func (t *Tracker) Describe(chan<- *prometheus.Desc) {
 	}
 }
 
-func (t *Tracker) updateCounters(lbls labels.Labels, ts int64, activeSeriesIncrement, receviedSampleIncrement, discardedSampleIncrement int64, reason *string) {
+func (t *Tracker) updateCounters(lbls labels.Labels, ts int64, activeSeriesIncrement, receviedSampleIncrement, discardedSampleIncrement float64, reason *string) {
 	if t == nil {
 		return
 	}
@@ -243,7 +264,7 @@ func (t *Tracker) updateCounters(lbls labels.Labels, ts int64, activeSeriesIncre
 	t.updateOverflow(buf.String(), ts, activeSeriesIncrement, receviedSampleIncrement, discardedSampleIncrement, reason)
 }
 
-func (t *Tracker) updateOverflow(stream string, ts int64, activeSeriesIncrement, receviedSampleIncrement, discardedSampleIncrement int64, reason *string) {
+func (t *Tracker) updateOverflow(stream string, ts int64, activeSeriesIncrement, receviedSampleIncrement, discardedSampleIncrement float64, reason *string) {
 	if t == nil {
 		return
 	}
@@ -260,20 +281,20 @@ func (t *Tracker) updateOverflow(stream string, ts int64, activeSeriesIncrement,
 		}
 		if discardedSampleIncrement > 0 && reason != nil {
 			o.discardSamplemu.Lock()
-			o.discardedSample[*reason] = atomic.NewInt64(discardedSampleIncrement)
+			o.discardedSample[*reason] = atomic.NewFloat64(discardedSampleIncrement)
 			o.discardSamplemu.Unlock()
 		}
 	} else if len(t.observed) < t.maxCardinality*2 {
 		t.observed[stream] = &Observation{
 			lastUpdate:      atomic.NewInt64(ts),
-			activeSerie:     atomic.NewInt64(activeSeriesIncrement),
-			receivedSample:  atomic.NewInt64(receviedSampleIncrement),
-			discardedSample: map[string]*atomic.Int64{},
+			activeSerie:     atomic.NewFloat64(activeSeriesIncrement),
+			receivedSample:  atomic.NewFloat64(receviedSampleIncrement),
+			discardedSample: map[string]*atomic.Float64{},
 			discardSamplemu: sync.RWMutex{},
 		}
 		if discardedSampleIncrement > 0 && reason != nil {
 			t.observed[stream].discardSamplemu.Lock()
-			t.observed[stream].discardedSample[*reason] = atomic.NewInt64(discardedSampleIncrement)
+			t.observed[stream].discardedSample[*reason] = atomic.NewFloat64(discardedSampleIncrement)
 			t.observed[stream].discardSamplemu.Unlock()
 		}
 	}
@@ -317,39 +338,4 @@ func (t *Tracker) UpdateCooldownDuration(cooldownDuration int64) {
 		return
 	}
 	t.cooldownDuration = cooldownDuration
-}
-
-func (t *Tracker) updateMetrics() {
-	if t == nil {
-		return
-	}
-
-	if t.isOverflow {
-		// if we are in overflow state, we only report the overflow metric
-		t.activeSeriesPerUserAttribution.WithLabelValues(t.overflowLabels[:len(t.overflowLabels)-1]...).Set(float64(1))
-		t.receivedSamplesAttribution.WithLabelValues(t.overflowLabels[:len(t.overflowLabels)-1]...).Add(float64(1))
-		t.discardedSampleAttribution.WithLabelValues(t.overflowLabels...).Add(float64(1))
-	} else {
-		t.obseveredMtx.Lock()
-		for key, c := range t.observed {
-			if c != nil {
-				keys := strings.Split(key, string(sep))
-				keys = append(keys, t.userID)
-				if c.activeSerie.Load() != 0 {
-					t.activeSeriesPerUserAttribution.WithLabelValues(keys...).Add(float64(c.activeSerie.Swap(0)))
-				}
-				if c.receivedSample.Load() > 0 {
-					t.receivedSamplesAttribution.WithLabelValues(keys...).Add(float64(c.receivedSample.Swap(0)))
-				}
-				c.discardSamplemu.Lock()
-				for reason, cnt := range c.discardedSample {
-					if cnt.Load() > 0 {
-						t.discardedSampleAttribution.WithLabelValues(append(keys, reason)...).Add(float64(cnt.Swap(0)))
-					}
-				}
-				c.discardSamplemu.Unlock()
-			}
-		}
-		t.obseveredMtx.Unlock()
-	}
 }
